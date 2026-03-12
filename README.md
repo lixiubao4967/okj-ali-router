@@ -92,6 +92,54 @@ end
 
 ---
 
+### 实际操作记录（FGT60FTK2109A4GU）
+
+#### 验证现有配置
+
+登录 FortiGate CLI 后，先查看当前 DNS 配置：
+
+```
+show system dns
+show system dns-database
+```
+
+实际输出：
+
+```
+FGT60FTK2109A4GU # show system dns
+config system dns
+    set primary 1.1.1.1
+    set secondary 172.20.0.10
+    set domain "okcoin.japan"
+end
+
+FGT60FTK2109A4GU # show system dns-database
+config system dns-database
+    edit "okcoin.japan"
+        set domain "okcoin.japan"
+        ...
+    next
+    edit "svc-cluster"
+        set domain "svc.cluster.local"
+        set forwarder "172.20.0.10"
+    next
+end
+```
+
+#### 结论
+
+`dns-database` 中已存在 `svc-cluster` 条目，将 `svc.cluster.local` 转发给 `172.20.0.10`，split DNS 已到位。只需将 secondary DNS 从 `172.20.0.10` 改为公网：
+
+```
+config system dns
+    set secondary 8.8.8.8
+end
+```
+
+这样 `aliyuncs.com` 等公网域名不再被内网 DNS 抢答，问题解决。
+
+---
+
 ### Mac 本机端解决方案：/etc/resolver 配置分域 DNS
 
 在无法修改防火墙配置时，可在 Mac 本机通过 `/etc/resolver/` 目录为 `aliyuncs.com` 单独指定 DNS，只影响该域名的解析，其他域名不受影响，且**持久有效（重启、网络切换均不丢失）**：
