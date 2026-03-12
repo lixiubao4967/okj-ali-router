@@ -92,26 +92,40 @@ end
 
 ---
 
-### Mac 本机端解决方案：scutil 配置分域 DNS
+### Mac 本机端解决方案：/etc/resolver 配置分域 DNS
 
-在无法修改防火墙配置时，可在 Mac 本机用 `scutil` 为 `aliyuncs.com` 单独指定 DNS，只影响该域名的解析，其他域名不受影响：
+在无法修改防火墙配置时，可在 Mac 本机通过 `/etc/resolver/` 目录为 `aliyuncs.com` 单独指定 DNS，只影响该域名的解析，其他域名不受影响，且**持久有效（重启、网络切换均不丢失）**：
 
 ```bash
-sudo scutil
+sudo mkdir -p /etc/resolver
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolver/aliyuncs.com
 ```
 
-进入交互模式后依次输入：
+验证生效：
+
+```bash
+scutil --dns | grep -A5 aliyuncs
+```
+
+应看到：
 
 ```
-> open
-> d.init
-> d.add ServerAddresses * 8.8.8.8
-> d.add DomainName aliyuncs.com
-> set State:/Network/Service/com.openvpn.client/Resolvers/aliyuncs.com
-> quit
+resolver #X
+  domain   : aliyuncs.com
+  nameserver[0] : 8.8.8.8
+```
+
+验证解析结果正确：
+
+```bash
+dig vpc.ap-northeast-1.aliyuncs.com
+# 应返回公网 IP（如 47.91.x.x），而不是 100.100.x.x
 ```
 
 效果：`*.aliyuncs.com` 域名解析强制走 `8.8.8.8`，k8s 内部域名解析不受影响。
+
+> **为什么不用 scutil 交互模式？**
+> `scutil` 写入 `State:` 键是内存态，网络切换（重连 WiFi、VPN 重连、DHCP 刷新）后即丢失。`/etc/resolver/` 文件由 mDNSResponder 直接读取，持久有效。
 
 ---
 
