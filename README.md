@@ -92,9 +92,32 @@ end
 
 ---
 
+### Mac 本机端解决方案：scutil 配置分域 DNS
+
+在无法修改防火墙配置时，可在 Mac 本机用 `scutil` 为 `aliyuncs.com` 单独指定 DNS，只影响该域名的解析，其他域名不受影响：
+
+```bash
+sudo scutil
+```
+
+进入交互模式后依次输入：
+
+```
+> open
+> d.init
+> d.add ServerAddresses * 8.8.8.8
+> d.add DomainName aliyuncs.com
+> set State:/Network/Service/com.openvpn.client/Resolvers/aliyuncs.com
+> quit
+```
+
+效果：`*.aliyuncs.com` 域名解析强制走 `8.8.8.8`，k8s 内部域名解析不受影响。
+
+---
+
 ### 临时绕过方法
 
-在无法修改防火墙配置时，可在 Mac 本机直接指定 DNS：
+将本机所有 DNS 改为公网（会影响 k8s 内部域名解析）：
 
 ```bash
 sudo networksetup -setdnsservers Wi-Fi 8.8.8.8 1.1.1.1
