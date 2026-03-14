@@ -1,6 +1,10 @@
-# DHCP 网关冲突故障排查记录
+# FortiGate DHCP 故障排查记录
 
-## 故障概要
+---
+
+## 问题一：VLAN2100 无线用户网关异常，无法上网
+
+### 故障概要
 
 | 项目 | 内容 |
 |------|------|
@@ -123,6 +127,91 @@ sudo tcpdump -i en0 -n port 67 or port 68
 # 观察 DHCP Offer 的 server-id 是否为 10.20.11.254
 ```
 
-## 结论
+### 结论
 
 本次故障的根本原因高度疑似 **AP 内置的 DHCP Server 与 FortiGate DHCP 冲突**（Rogue DHCP）。前期因 FortiGate 抢先响应而未暴露，租约到期后 AP 抢先响应导致客户端获取了错误的网关。修复方向是**禁用 AP 的 DHCP 功能并确保 AP 工作在桥接模式**。
+
+---
+
+## 问题二：VLAN2201 新设备无法自动获取 IP 地址
+
+### 故障概要
+
+| 项目 | 内容 |
+|------|------|
+| 发生日期 | 2026-03-14 |
+| 影响范围 | `10.20.13.0/24`（VLAN2201）网段新接入的设备 |
+| 故障现象 | 新设备无法通过 DHCP 自动获取 IP 地址 |
+
+### 原因分析
+
+FortiGate DHCP Server（edit 5）针对 VLAN2201 接口配置了 **MAC 地址白名单机制**：
+
+```
+config system dhcp server
+    edit 5
+        set mac-acl-default-action block    ← 关键配置：默认拒绝
+        set interface "VLAN2201"
+        ...
+        config reserved-address
+            edit 1  → okjppc001  3c:2c:30:e2:12:74
+            edit 2  → okjppc002  3c:2c:30:e2:10:1a
+            edit 3  → okjppc006  3c:2c:30:e2:16:60
+            ...（共 14 台设备）
+        end
+    next
+end
+```
+
+`mac-acl-default-action block` 表示：**只有 `reserved-address` 列表中登记了 MAC 地址的设备才能获取 IP，所有未登记的新设备都会被 DHCP 拒绝**。
+
+当前白名单中仅有 14 台设备（okjppc001-012、okjsvr101、okjwinsv01），任何新设备的 MAC 不在列表中，DHCP 请求直接被丢弃。
+
+### 解决方案
+
+#### 方案一：将新设备 MAC 加入白名单（推荐，保持安全管控）
+
+```
+config system dhcp server
+    edit 5
+        config reserved-address
+            edit 15
+                set ip 10.20.13.15
+                set mac xx:xx:xx:xx:xx:xx
+                set description "新设备名称"
+            next
+        end
+    next
+end
+```
+
+> 将 `xx:xx:xx:xx:xx:xx` 替换为新设备的实际 MAC 地址。
+
+#### 方案二：取消 MAC 白名单限制（允许所有设备获取地址）
+
+```
+config system dhcp server
+    edit 5
+        set mac-acl-default-action assign
+    next
+end
+```
+
+> **注意**：该网段连接的是生产 PC（okjppc 系列），`block` 策略可能是有意为之的安全管控。取消前请确认是否符合安全策略。
+
+### 验证步骤
+
+```bash
+# 在 FortiGate 上查看 DHCP 分配日志
+diagnose debug application dhcps -1
+diagnose debug enable
+
+# 新设备端重新获取地址
+# Windows:
+ipconfig /release && ipconfig /renew
+
+# macOS:
+sudo ipconfig set en0 DHCP
+
+# 确认获取到 10.20.13.x 地址和正确网关 10.20.13.254
+```
