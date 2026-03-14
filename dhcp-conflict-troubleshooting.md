@@ -148,6 +148,41 @@ sudo tcpdump -i en0 -n port 67 or port 68
 # 观察 DHCP Offer 的 server-id 是否为 10.20.11.254
 ```
 
+### macOS 端抓包排查 Rogue DHCP 的方法
+
+当怀疑网络中存在 Rogue DHCP Server 但不确定来源时，可通过 tcpdump 在客户端抓包定位。
+
+#### 注意事项
+
+- DHCP 是 L2 广播协议，只会出现在物理接口（`en0`）上，**不会经过 VPN 隧道接口（`utun*`）**，在 utun 上抓不到是正常的
+- tcpdump 按 Ctrl+C 后显示的 `received by filter` 是内核 BPF 匹配数，`captured` 是实际递交用户态的数量。如果 `captured` 为 0 但 `received by filter` 非零，通常是抓包持续时间太短，包还在内核 buffer 里就被中断了
+
+#### 抓包步骤
+
+```bash
+# 1. 只抓 DHCP Server 方向的包（server→client），直接看到是哪个 IP 在发 DHCP response
+sudo tcpdump -i en0 -n -v 'udp src port 67'
+
+# 2. 在另一个终端触发 DHCP renew，让 DHCP Server 响应
+sudo ipconfig set en0 DHCP
+```
+
+观察 tcpdump 输出中 DHCP Offer/ACK 的 source IP：
+- 如果只看到 `10.20.11.254` → FortiGate 正常响应，无 Rogue
+- 如果看到 `10.20.11.2` 或其他非 FortiGate IP → 确认存在 Rogue DHCP Server
+
+#### 抓全量 DHCP 包（含客户端请求）
+
+```bash
+# 抓双向 DHCP 流量，带详细解码
+sudo tcpdump -i en0 -n -v port 67 or port 68
+
+# 保存为 pcap 文件供 Wireshark 分析
+sudo tcpdump -i en0 -n -w /tmp/dhcp.pcap port 67 or port 68
+```
+
+> **建议**：在客户端抓包只能作为辅助验证手段。更可靠的方式是在 FortiGate 上开启 DHCP Snooping 或查看 DHCP 日志（`diagnose debug application dhcps -1`），从交换层面直接拦截和定位 Rogue DHCP。
+
 ### 结论
 
 本次故障的根本原因高度疑似 **AP 内置的 DHCP Server 与 FortiGate DHCP 冲突**（Rogue DHCP）。前期因 FortiGate 抢先响应而未暴露，租约到期后 AP 抢先响应导致客户端获取了错误的网关。修复方向是**禁用 AP 的 DHCP 功能并确保 AP 工作在桥接模式**。
