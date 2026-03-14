@@ -68,43 +68,64 @@ DHCP 采用广播机制，客户端发送 `DHCPDISCOVER` 后，**谁先响应（
 2. **AP 启用了客户端隔离（Client Isolation）**：部分 AP 在启用自身 DHCP 后会隔离客户端，阻止其访问同网段的其他设备
 3. **二层隔离**：AP 可能在桥接模式和路由模式之间发生了切换，导致流量不再直接桥接到 FortiGate 所在的 VLAN
 
+### 排查进展
+
+通过 FortiGate DHCP 租约表发现可疑设备：
+
+| IP | MAC | VCI | 说明 |
+|----|-----|-----|------|
+| `10.20.11.24` | `e0:d3:62:e6:f0:16` | `udhcp 1.22.1` | 无 Hostname，确认为 **TP-Link AP** |
+
+- `udhcp` 是 BusyBox 内置 DHCP 客户端，典型的嵌入式设备（AP/路由器）
+- 该 AP 之前静态配置为 `10.20.11.2`，后被重置/重启，从 FortiGate DHCP 获取了 `.24` 地址
+- 这解释了为什么 `10.20.11.2` 后来 ping 不通了 — AP 已不在该地址
+
 ## 解决方案
 
-### 方案一：禁用 AP 的 DHCP 功能（推荐）
+### 方案一：登录 TP-Link AP 禁用其 DHCP 功能（根治）
 
-1. 登录 AP 管理界面（`http://10.20.11.2`）
-2. 找到 DHCP Server 设置，**关闭**
-3. 确认 AP 工作在**桥接模式（Bridge Mode）**，而非路由模式（Router Mode）
-4. 重启 AP
-5. 客户端重新连接，验证网关是否恢复为 `10.20.11.254`
+AP 当前 IP 为 `10.20.11.24`（MAC: `e0:d3:62:e6:f0:16`），尝试以下方式登录管理界面：
 
-### 方案二：FortiGate 开启 DHCP Rogue Server 检测
+- `http://10.20.11.24` / `https://10.20.11.24`
+- `http://10.20.11.24:8080`
+- TP-Link 默认管理地址 `http://tplogin.cn`
+- 用网线直连 AP 的 LAN 口访问
 
-在 FortiGate 上启用 DHCP Snooping 或 Rogue Server 检测，阻止非授权 DHCP 响应：
+登录后操作：
+
+1. **关闭 DHCP Server 功能**
+2. **将工作模式设为桥接模式（Bridge/AP Mode）**，而非路由模式（Router Mode）
+3. 保存并重启 AP
+
+### 方案二：FortiGate 开启 DHCP Snooping（防复发）
+
+即使 AP 以后被重置导致 DHCP 重新开启，FortiGate 的 DHCP Snooping 会在交换层面拦截非授权的 DHCP Offer，确保客户端只收到 FortiGate 的正确响应：
 
 ```
-config system dhcp server
-    edit <id>
-        set interface "对应接口名"
-        set rogue-dhcp 10.20.11.2
+config system interface
+    edit "VLAN2100"
+        set dhcp-snooping enable
     next
 end
 ```
 
-> FortiGate 还支持在交换接口上配置 DHCP Snooping trust/untrust 端口，仅允许信任端口发送 DHCP Offer。
-
-### 方案三：临时应急
-
-在用户端手动配置静态 IP：
+同时将 AP 的 MAC 绑定固定 IP，方便后续管理：
 
 ```
-IP:       10.20.11.x（避开 DHCP 池范围）
-子网掩码:  255.255.255.0
-网关:      10.20.11.254
-DNS:       按需设置
+config system dhcp server
+    edit 3
+        config reserved-address
+            edit 1
+                set ip 10.20.11.2
+                set mac e0:d3:62:e6:f0:16
+                set description "TP-Link-AP-VLAN2100"
+            next
+        end
+    next
+end
 ```
 
-> 注意：如果 AP 处于路由模式导致二层隔离，此方案同样无效，必须先修复 AP 配置。
+> **方案一是根治，方案二是防复发。建议两个都做。**
 
 ## 验证步骤
 
