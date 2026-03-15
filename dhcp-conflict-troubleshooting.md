@@ -84,18 +84,43 @@ DHCP 采用广播机制，客户端发送 `DHCPDISCOVER` 后，**谁先响应（
 
 ### 方案一：登录 TP-Link AP 禁用其 DHCP 功能（根治）
 
-AP 当前 IP 为 `10.20.11.24`（MAC: `e0:d3:62:e6:f0:16`），尝试以下方式登录管理界面：
+#### 设备信息
+
+| 项目 | 内容 |
+|------|------|
+| 型号 | TP-Link RE700X/A |
+| 规格 | Wi-Fi 6 (11ax), 2402 + 574Mbps, HE160 |
+| 工作模式 | AP 模式（ブリッジモード） |
+| 当前 IP | `10.20.11.24`（MAC: `e0:d3:62:e6:f0:16`） |
+
+#### 登录管理界面
+
+尝试以下方式访问：
 
 - `http://10.20.11.24` / `https://10.20.11.24`
 - `http://10.20.11.24:8080`
-- TP-Link 默认管理地址 `http://tplogin.cn`
+- TP-Link 默认管理地址 `http://tplogin.cn` 或 `http://tplinkrepeater.net`
 - 用网线直连 AP 的 LAN 口访问
 
-登录后操作：
+> 如果 IP 已变更，可在 FortiGate DHCP 租约列表中通过 MAC `e0:d3:62:e6:f0:16` 查找当前 IP。
 
-1. **关闭 DHCP Server 功能**
-2. **将工作模式设为桥接模式（Bridge/AP Mode）**，而非路由模式（Router Mode）
+#### 检查并关闭 DHCP
+
+登录后进入 **設定（Settings）** → **ネットワーク（Network）**，确认以下项目：
+
+| 检查项目 | 期望值 |
+|----------|--------|
+| DHCP サーバー | **無効（Disabled）** |
+| IP 取得方法 | **動的IP / DHCP**（从上游 FortiGate 获取） |
+| 動作モード | **AP モード（ブリッジモード）** |
+
+操作步骤：
+
+1. **关闭 DHCP Server 功能**（DHCP サーバー → 無効）
+2. **确认工作模式为 AP 模式（ブリッジモード）**，而非路由模式（Router Mode）
 3. 保存并重启 AP
+
+> 如果完全无法登录管理界面，可用针按住设备上的 **Reset 按钮约 5 秒**恢复出厂设置，然后重新配置为 AP 模式并确保 DHCP 关闭。
 
 ### 方案二：FortiGate 开启 DHCP Snooping（防复发）
 
