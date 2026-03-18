@@ -3,16 +3,16 @@
 ## 一、网络拓扑
 
 ```
-FG-A (Tokyo Office)                        FG-B (Other Office)
-公网 IP: 121.101.74.242                    公网 IP: 150.249.195.73
-内网: 192.168.1.0/24                       内网: 192.168.2.0/24
+FG-A (OKJ)                                 FG-B (OKBL)
+公网 IP: 150.249.195.73                    公网 IP: 121.101.74.242
+内网: 10.20.21.0/24                        内网: 10.120.23.0/24
 WAN 接口: wan1                              WAN 接口: wan1
 ```
 
 目标：实现两侧内网互通
 
 ```
-192.168.1.0/24  ←──IPsec Tunnel──→  192.168.2.0/24
+10.20.21.0/24  ←──IPsec Tunnel──→  10.120.23.0/24
 ```
 
 > **注意**：内网网段请根据实际环境替换，两侧网段不能重叠。
@@ -33,14 +33,14 @@ IPsec VPN 由三部分组成：
 
 ## 三、Phase 1 配置（IKE — 两边都要配）
 
-### FG-A 侧 (121.101.74.242)
+### FG-A 侧 (150.249.195.73)
 
 **GUI 路径**: VPN > IPsec Tunnels > Create New > Custom
 
 | 参数 | 值 |
 |------|-----|
 | Name | `vpn-to-fgb` |
-| Remote Gateway | `150.249.195.73` |
+| Remote Gateway | `121.101.74.242` |
 | Interface | `wan1` |
 | IKE Version | 2 (推荐) |
 | Authentication | Pre-Shared Key |
@@ -61,7 +61,7 @@ config vpn ipsec phase1-interface
         set peertype any
         set proposal aes256-sha256
         set dhgrp 14
-        set remote-gw 150.249.195.73
+        set remote-gw 121.101.74.242
         set psksecret "YourStrongPSK2024!"
         set dpd on-idle
         set dpd-retryinterval 10
@@ -69,7 +69,7 @@ config vpn ipsec phase1-interface
 end
 ```
 
-### FG-B 侧 (150.249.195.73)
+### FG-B 侧 (121.101.74.242)
 
 配置完全对称，仅 `remote-gw` 不同：
 
@@ -81,7 +81,7 @@ config vpn ipsec phase1-interface
         set peertype any
         set proposal aes256-sha256
         set dhgrp 14
-        set remote-gw 121.101.74.242
+        set remote-gw 150.249.195.73
         set psksecret "YourStrongPSK2024!"
         set dpd on-idle
         set dpd-retryinterval 10
@@ -102,8 +102,8 @@ config vpn ipsec phase2-interface
         set proposal aes256-sha256
         set pfs enable
         set dhgrp 14
-        set src-subnet 192.168.1.0 255.255.255.0
-        set dst-subnet 192.168.2.0 255.255.255.0
+        set src-subnet 10.20.21.0 255.255.255.0
+        set dst-subnet 10.120.23.0 255.255.255.0
         set keylifeseconds 3600
     next
 end
@@ -118,8 +118,8 @@ config vpn ipsec phase2-interface
         set proposal aes256-sha256
         set pfs enable
         set dhgrp 14
-        set src-subnet 192.168.2.0 255.255.255.0
-        set dst-subnet 192.168.1.0 255.255.255.0
+        set src-subnet 10.120.23.0 255.255.255.0
+        set dst-subnet 10.20.21.0 255.255.255.0
         set keylifeseconds 3600
     next
 end
@@ -134,10 +134,10 @@ end
 ```
 config firewall address
     edit "local-lan-a"
-        set subnet 192.168.1.0 255.255.255.0
+        set subnet 10.20.21.0 255.255.255.0
     next
     edit "remote-lan-b"
-        set subnet 192.168.2.0 255.255.255.0
+        set subnet 10.120.23.0 255.255.255.0
     next
 end
 ```
@@ -147,10 +147,10 @@ end
 ```
 config firewall address
     edit "local-lan-b"
-        set subnet 192.168.2.0 255.255.255.0
+        set subnet 10.120.23.0 255.255.255.0
     next
     edit "remote-lan-a"
-        set subnet 192.168.1.0 255.255.255.0
+        set subnet 10.20.21.0 255.255.255.0
     next
 end
 ```
@@ -242,7 +242,7 @@ Route-based VPN 会自动创建虚拟接口（即 Phase1 的 tunnel 名称），
 ```
 config router static
     edit 0
-        set dst 192.168.2.0 255.255.255.0
+        set dst 10.120.23.0 255.255.255.0
         set device "vpn-to-fgb"
     next
 end
@@ -253,7 +253,7 @@ end
 ```
 config router static
     edit 0
-        set dst 192.168.1.0 255.255.255.0
+        set dst 10.20.21.0 255.255.255.0
         set device "vpn-to-fga"
     next
 end
@@ -275,8 +275,8 @@ end
 
 ```bash
 # 从外部测试 UDP 500 是否可达
-nc -u -z 150.249.195.73 500
 nc -u -z 121.101.74.242 500
+nc -u -z 150.249.195.73 500
 ```
 
 ---
@@ -325,8 +325,8 @@ diagnose debug reset
 从 FG-A 内网主机：
 
 ```bash
-ping 192.168.2.1
-traceroute 192.168.2.1
+ping 10.120.23.1
+traceroute 10.120.23.1
 ```
 
 ### 常见问题排查
