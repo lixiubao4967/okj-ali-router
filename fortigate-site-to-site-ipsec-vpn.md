@@ -9,13 +9,16 @@ FG-A (OKJ)                                 FG-B (OKBL)
 WAN 接口: wan1                              WAN 接口: wan1
 ```
 
-目标：实现两侧内网互通
+目标：
+1. 两侧内网互通（`10.20.21.0/24 ↔ 10.120.23.0/24`）
+2. **FG-B (OKBL) 的内网流量借 FG-A (OKJ) 的公网出口上网**
 
 ```
-10.20.21.0/24  ←──IPsec Tunnel──→  10.120.23.0/24
+OKBL 客户端 (10.120.23.x)
+  → FG-B → IPsec Tunnel → FG-A → NAT(150.249.195.73) → 互联网
 ```
 
-> **注意**：内网网段请根据实际环境替换，两侧网段不能重叠。
+> **注意**：内网网段不能重叠。
 
 ---
 
@@ -93,11 +96,13 @@ end
 
 ## 四、Phase 2 配置（IPsec SA）
 
+需要两条 Phase 2：一条用于两侧内网互通，一条用于 OKBL 借 OKJ 出公网。
+
 ### FG-A 侧
 
 ```
 config vpn ipsec phase2-interface
-    edit "vpn-to-fgb-p2"
+    edit "vpn-to-fgb-p2-lan"
         set phase1name "vpn-to-fgb"
         set proposal aes256-sha256
         set pfs enable
@@ -106,20 +111,38 @@ config vpn ipsec phase2-interface
         set dst-subnet 10.120.23.0 255.255.255.0
         set keylifeseconds 3600
     next
+    edit "vpn-to-fgb-p2-internet"
+        set phase1name "vpn-to-fgb"
+        set proposal aes256-sha256
+        set pfs enable
+        set dhgrp 14
+        set src-subnet 0.0.0.0 0.0.0.0
+        set dst-subnet 10.120.23.0 255.255.255.0
+        set keylifeseconds 3600
+    next
 end
 ```
 
-### FG-B 侧（网段反过来）
+### FG-B 侧
 
 ```
 config vpn ipsec phase2-interface
-    edit "vpn-to-fga-p2"
+    edit "vpn-to-fga-p2-lan"
         set phase1name "vpn-to-fga"
         set proposal aes256-sha256
         set pfs enable
         set dhgrp 14
         set src-subnet 10.120.23.0 255.255.255.0
         set dst-subnet 10.20.21.0 255.255.255.0
+        set keylifeseconds 3600
+    next
+    edit "vpn-to-fga-p2-internet"
+        set phase1name "vpn-to-fga"
+        set proposal aes256-sha256
+        set pfs enable
+        set dhgrp 14
+        set src-subnet 10.120.23.0 255.255.255.0
+        set dst-subnet 0.0.0.0 0.0.0.0
         set keylifeseconds 3600
     next
 end
@@ -197,6 +220,26 @@ config firewall policy
 end
 ```
 
+**隧道 → 公网（OKBL 借 OKJ 出网，需开启 NAT）**：
+
+```
+config firewall policy
+    edit 0
+        set name "vpn-b-to-internet"
+        set srcintf "vpn-to-fgb"
+        set dstintf "wan1"
+        set srcaddr "remote-lan-b"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set nat enable
+    next
+end
+```
+
+> **注意**：此策略必须开启 NAT (`set nat enable`)，FG-A 会将 OKBL 的源 IP SNAT 为自己的公网 IP `150.249.195.73` 后转发到互联网。
+
 ### FG-B 侧（对称配置）
 
 ```
@@ -229,15 +272,13 @@ config firewall policy
 end
 ```
 
-> **重要**：站点到站点 VPN 策略中 NAT 必须关闭 (`set nat disable`)，否则源 IP 会被改写，对端无法正确路由回包。
+> **重要**：LAN 互通的策略中 NAT 必须关闭 (`set nat disable`)，否则源 IP 会被改写，对端无法正确路由回包。
 
 ---
 
-## 七、静态路由
+## 七、路由配置（核心难点）
 
-Route-based VPN 会自动创建虚拟接口（即 Phase1 的 tunnel 名称），需要手动添加静态路由。
-
-### FG-A 侧
+### FG-A 侧（两种方案通用）
 
 ```
 config router static
@@ -248,7 +289,24 @@ config router static
 end
 ```
 
-### FG-B 侧
+### FG-B 侧 — 路由方案选择
+
+FG-B 需要把 LAN 流量通过隧道送往 FG-A 出公网，但**默认路由 `0.0.0.0/0` 已经指向 wan1 网关（用于建立 VPN 隧道本身）**。如果直接把默认路由改指隧道，VPN 封装包也会走隧道，导致隧道断联（路由环路）。
+
+以下提供两种方案解决此问题：
+
+---
+
+### 方案一：策略路由 (PBR) — 推荐
+
+**原理**：默认路由不动，用策略路由按**源地址**将 LAN 流量导入隧道。VPN 封装包由 FG-B 自身发出（源不是 `10.120.23.0/24`），不会匹配策略路由，仍走 wan1。
+
+**优点**：
+- 默认路由不变，VPN 隧道稳定性高
+- FG-B 自身管理流量（NTP、日志、固件更新）仍走本地公网
+- 灵活，可按源/目的精细控制哪些流量走隧道
+
+**静态路由（仅 LAN 互通）**：
 
 ```
 config router static
@@ -258,6 +316,78 @@ config router static
     next
 end
 ```
+
+> 默认路由 `0.0.0.0/0 → wan1` 保持不变。
+
+**策略路由**：
+
+```
+config router policy
+    edit 1
+        set input-device "internal"
+        set src "10.120.23.0/255.255.255.0"
+        set dst "0.0.0.0/0.0.0.0"
+        set output-device "vpn-to-fga"
+    next
+end
+```
+
+> 含义：从 internal 口进入、源为 `10.120.23.0/24`、目的为任意地址的流量 → 走 VPN 隧道到 FG-A。
+>
+> FG-B 自身发出的流量（源 IP 是 wan1 地址 `121.101.74.242` 或 internal 地址）不匹配此规则，仍走默认路由出 wan1，VPN 不受影响。
+
+---
+
+### 方案二：主机路由 + 默认路由改隧道
+
+**原理**：添加一条 `/32` 主机路由指向 FG-A 公网 IP，确保 VPN 封装包走 wan1；然后将默认路由改为走隧道。`/32` 比 `0.0.0.0/0` 更精确，路由表优先匹配。
+
+**优点**：
+- 配置直观，所有流量默认走隧道
+- 不需要理解策略路由概念
+
+**缺点**：
+- FG-B 自身上网也走隧道（除非额外排除）
+- 如果 FG-A 端隧道故障，FG-B 所有上网都断
+
+```
+config router static
+    # LAN 互通
+    edit 0
+        set dst 10.20.21.0 255.255.255.0
+        set device "vpn-to-fga"
+    next
+    # 关键：确保 VPN 封装包走 wan1（/32 优先于 0.0.0.0/0）
+    edit 0
+        set dst 150.249.195.73 255.255.255.255
+        set gateway <wan1-网关地址>
+        set device "wan1"
+    next
+    # 默认路由改为走隧道
+    edit 0
+        set dst 0.0.0.0 0.0.0.0
+        set device "vpn-to-fga"
+        set priority 5
+    next
+end
+```
+
+> **注意**：
+> - `<wan1-网关地址>` 替换为 FG-B wan1 的实际上游网关 IP。
+> - 原有的默认路由 `0.0.0.0/0 → wan1` 如果 priority 更低（数字更小），需要删除或调高其 priority，确保隧道路由优先。
+> - `/32` 主机路由保证了到 `150.249.195.73` 的 IKE/ESP 封装包始终走 wan1 物理出口。
+
+---
+
+### 两种方案对比
+
+| | 方案一 (PBR) | 方案二 (主机路由) |
+|---|---|---|
+| 默认路由 | 不改动 | 改为隧道 |
+| VPN 稳定性 | 高，路由层面无冲突 | 依赖 /32 优先级 |
+| 灵活性 | 可按源/目的精细控制 | 全部流量走隧道 |
+| FG-B 自身上网 | 仍走 wan1 本地出口 | 也走隧道（除非额外排除） |
+| 隧道故障影响 | 仅 LAN 用户断网 | FG-B 所有上网都断 |
 
 ---
 
