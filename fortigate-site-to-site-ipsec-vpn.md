@@ -47,12 +47,14 @@ IPsec VPN 由三部分组成：
 | Interface | `wan1` |
 | IKE Version | 2 (推荐) |
 | Authentication | Pre-Shared Key |
-| Pre-Shared Key | `YourStrongPSK2024!` (两边必须一致) |
+| Pre-Shared Key | `<your-psk>` (两边必须一致，见下方生成方式) |
 | Encryption | AES256 |
 | Authentication (Hash) | SHA256 |
 | DH Group | 14 (2048-bit) 或 19 (ECP256) |
 | Key Lifetime | 86400 (秒) |
 | Dead Peer Detection | Enable |
+
+> **PSK 生成建议**：使用 `openssl rand -base64 32` 生成 20+ 字符的随机密钥，避免使用可猜测的字符串。
 
 **CLI 方式**：
 
@@ -65,9 +67,11 @@ config vpn ipsec phase1-interface
         set proposal aes256-sha256
         set dhgrp 14
         set remote-gw 121.101.74.242
-        set psksecret "YourStrongPSK2024!"
+        set psksecret "<your-psk>"
         set dpd on-idle
         set dpd-retryinterval 10
+        set fragmentation enable
+        set auto-negotiate enable
     next
 end
 ```
@@ -85,9 +89,11 @@ config vpn ipsec phase1-interface
         set proposal aes256-sha256
         set dhgrp 14
         set remote-gw 150.249.195.73
-        set psksecret "YourStrongPSK2024!"
+        set psksecret "<your-psk>"
         set dpd on-idle
         set dpd-retryinterval 10
+        set fragmentation enable
+        set auto-negotiate enable
     next
 end
 ```
@@ -198,6 +204,9 @@ config firewall policy
         set schedule "always"
         set service "ALL"
         set nat disable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
     next
 end
 ```
@@ -216,6 +225,9 @@ config firewall policy
         set schedule "always"
         set service "ALL"
         set nat disable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
     next
 end
 ```
@@ -234,6 +246,9 @@ config firewall policy
         set schedule "always"
         set service "ALL"
         set nat enable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
     next
 end
 ```
@@ -254,6 +269,9 @@ config firewall policy
         set schedule "always"
         set service "ALL"
         set nat disable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
     next
 end
 
@@ -268,11 +286,33 @@ config firewall policy
         set schedule "always"
         set service "ALL"
         set nat disable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
+    next
+end
+
+config firewall policy
+    edit 0
+        set name "lan-to-internet-via-vpn"
+        set srcintf "internal"
+        set dstintf "vpn-to-fga"
+        set srcaddr "local-lan-b"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set nat disable
+        set tcp-mss-sender 1360
+        set tcp-mss-receiver 1360
+        set logtraffic all
     next
 end
 ```
 
-> **重要**：LAN 互通的策略中 NAT 必须关闭 (`set nat disable`)，否则源 IP 会被改写，对端无法正确路由回包。
+> **重要**：
+> - LAN 互通的策略中 NAT 必须关闭 (`set nat disable`)，否则源 IP 会被改写，对端无法正确路由回包。
+> - `lan-to-internet-via-vpn` 策略是 OKBL 用户借 OKJ 出网的**必要条件**。PBR 只负责路由决策，防火墙策略才决定流量是否放行。此策略 NAT 关闭，因为 SNAT 由 FG-A 侧的 `vpn-b-to-internet` 策略完成。
 
 ---
 
@@ -471,10 +511,58 @@ traceroute 10.120.23.1
 
 ---
 
-## 十、安全建议
+## 十、隧道健康监测与故障回退
 
-1. **PSK 强度**：使用 20+ 字符的随机字符串，包含大小写字母、数字和特殊字符
+隧道可能出现 Phase 1 存活但数据面不通的"静默失效"。配置 link-monitor 可自动检测并触发回退。
+
+### FG-B 侧（推荐，配合 PBR 方案使用）
+
+**Link Monitor — 通过隧道 Ping FG-A 内网接口检测隧道健康：**
+
+```
+config system link-monitor
+    edit "vpn-health-check"
+        set srcintf "vpn-to-fga"
+        set server "10.20.21.254"
+        set protocol ping
+        set gateway-ip 10.20.21.254
+        set interval 5
+        set failtime 3
+        set recovertime 3
+        set update-static-route enable
+    next
+end
+```
+
+> **说明**：
+> - `server` 填 FG-A 的 internal 接口 IP（`10.20.21.254`），即隧道对端可达的 LAN 网关地址。
+> - 每 5 秒 ping 一次，连续 3 次失败（15 秒）判定隧道故障。
+> - `update-static-route enable`：隧道故障时自动撤回指向 `vpn-to-fga` 的静态路由，流量回退到 wan1 本地出口。
+
+### FG-A 侧（可选）
+
+```
+config system link-monitor
+    edit "vpn-health-check"
+        set srcintf "vpn-to-fgb"
+        set server "10.120.23.254"
+        set protocol ping
+        set gateway-ip 10.120.23.254
+        set interval 5
+        set failtime 3
+        set recovertime 3
+        set update-static-route enable
+    next
+end
+```
+
+---
+
+## 十一、安全建议
+
+1. **PSK 强度**：使用 `openssl rand -base64 32` 生成 20+ 字符的随机密钥
 2. **定期轮换密钥**：建议每 3-6 个月更换一次 PSK
 3. **限制 Service**：防火墙策略中的 `service` 尽量不用 `ALL`，按需开放
-4. **启用日志**：策略中开启 `set logtraffic all` 便于审计
+4. **启用日志**：策略中开启 `set logtraffic all` 便于审计（已在上述策略中配置）
 5. **考虑证书认证**：如果设备支持，使用数字证书替代 PSK 更安全
+6. **TCP MSS Clamping**：所有经过隧道的策略已配置 `tcp-mss-sender/receiver 1360`，避免 IPsec 封装后超过 MTU 导致分片或黑洞
